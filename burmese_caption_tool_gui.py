@@ -107,9 +107,11 @@ def split_cue_by_words(cue: Cue, max_chars: int) -> List[Cue]:
     if not words:
         return [Cue(cue.index, cue.start_ms, cue.end_ms, "")]
 
+    # Keep long words intact to avoid breaking Burmese glyph shaping.
+    # If a word is longer than max_chars, don't split that cue.
     long_words = [w for w in words if len(w) > max_chars]
     if long_words:
-        return split_cue_by_chars(cue, max_chars)
+        return [Cue(cue.index, cue.start_ms, cue.end_ms, cue.text.strip())]
 
     chunks = split_text_at_spaces(cue.text, max_chars)
 
@@ -137,35 +139,12 @@ def split_cue_by_words(cue: Cue, max_chars: int) -> List[Cue]:
     return out
 
 
-def split_cue_by_chars(cue: Cue, max_chars: int) -> List[Cue]:
-    text = cue.text.strip()
-    if len(text) <= max_chars:
-        return [Cue(cue.index, cue.start_ms, cue.end_ms, text)]
+def escape_filter_path(path: Path) -> str:
+    return str(path).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
 
-    chunks = []
-    for i in range(0, len(text), max_chars):
-        chunk = text[i:i + max_chars]
-        chunks.append(chunk)
 
-    if len(chunks) == 1:
-        return [Cue(cue.index, cue.start_ms, cue.end_ms, chunks[0])]
-
-    total_duration = max(1, cue.end_ms - cue.start_ms)
-    chunk_duration = total_duration // len(chunks)
-    
-    out: List[Cue] = []
-    start = cue.start_ms
-    
-    for i, chunk in enumerate(chunks):
-        if i == len(chunks) - 1:
-            end = cue.end_ms
-        else:
-            end = start + chunk_duration
-        
-        out.append(Cue(0, start, end, chunk))
-        start = end
-
-    return out
+def escape_style_value(value: str) -> str:
+    return value.replace("\\", r"\\").replace("'", r"\'").replace(",", r"\,")
 
 
 def rebuild_cues(cues: List[Cue], max_chars: int) -> List[Cue]:
@@ -558,13 +537,13 @@ class CaptionToolGUI:
             f"BorderStyle={3 if self.use_box.get() else 1}",
         ]
         if self.font_name.get():
-            style.append(f"FontName={self.font_name.get()}")
+            style.append(f"FontName={escape_style_value(self.font_name.get())}")
             
-        srt_escaped = str(temp_srt_path).replace("\\", "/").replace(":", "\\:")
-        parts = [f"subtitles='{srt_escaped}'"]
+        srt_escaped = escape_filter_path(temp_srt_path)
+        parts = [f"subtitles='{srt_escaped}'", "charenc=UTF-8", "wrap_unicode=1"]
         
         if fonts_dir:
-            fonts_escaped = str(fonts_dir).replace("\\", "/").replace(":", "\\:")
+            fonts_escaped = escape_filter_path(fonts_dir)
             parts.append(f"fontsdir='{fonts_escaped}'")
             
         parts.append(f"force_style='{','.join(style)}'")
