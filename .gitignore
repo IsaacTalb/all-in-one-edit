@@ -1,0 +1,13 @@
+# Output folders - not pushed to GitHub
+results/
+raw_video_and_SRT/
+
+# Export tracking files
+exported_list*
+*.log
+
+# Temporary files
+*.tmp
+__pycache__/
+*.pyc
+.DS_Store

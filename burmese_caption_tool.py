@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Burmese short-video caption tool.
+Burmese short-video caption tool with syllable-based splitting.
 
 Features:
 - Reads SRT.
-- Shortens long captions by splitting at word boundaries (spaces only).
-- Never breaks individual words - keeps them intact.
+- Shortens long captions by splitting at syllable boundaries (max 10 syllables per line).
+- Never breaks individual syllables - keeps them intact.
 - Auto-adjusts cue timing when a caption is split.
 - Burns subtitles into video with ffmpeg.
-- Supports custom fonts dir, center/middle placement, text color, outline, and background box.
+- Supports custom fonts dir, center/middle placement, text color, outline.
 - Auto-detects font name from TTF files.
 """
 
@@ -21,9 +21,10 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
 
 
 try:
@@ -39,6 +40,13 @@ SRT_PATTERN = re.compile(
     r"(.*?)(?=\n\s*\n|\Z)",
     re.DOTALL,
 )
+
+# Myanmar Unicode ranges
+MYANMAR_CONSONANTS = r'\u1000-\u1021'
+MYANMAR_INDEPENDENT = r'\u1023-\u1027\u1029-\u102A'
+MYANMAR_MEDIALS = r'\u103B-\u103E'
+MYANMAR_VOWELS = r'\u102C-\u1032\u1036-\u1038'
+MYANMAR_KILLERS = r'\u103A\u1039'
 
 
 @dataclass
@@ -85,65 +93,129 @@ def parse_srt(content: str) -> List[Cue]:
     return cues
 
 
-def split_at_spaces_only(text: str, max_len: int) -> List[str]:
+def split_burmese_syllables(text: str) -> List[str]:
     """
-    Split text at spaces only. Never breaks individual words.
-    If a single word is longer than max_len, it stays as one caption.
+    Split Burmese text into syllables.
+    A syllable consists of: consonant + optional medials + optional vowels + optional killers
+    """
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return []
+    
+    # Pattern for a Myanmar syllable
+    # Consonant (base) + optional combining marks (medials, vowels, killers)
+    syllable_pattern = rf'[{MYANMAR_CONSONANTS}{MYANMAR_INDEPENDENT}]' + \
+                      rf'[{MYANMAR_MEDIALS}{MYANMAR_VOWELS}{MYANMAR_KILLERS}]*'
+    
+    syllables = []
+    i = 0
+    while i < len(text):
+        # Skip spaces
+        if text[i] == ' ':
+            i += 1
+            continue
+        
+        # Try to match a Myanmar syllable
+        match = re.match(syllable_pattern, text[i:])
+        if match:
+            syllables.append(match.group())
+            i += len(match.group())
+        else:
+            # Non-Myanmar character (like English, punctuation)
+            # Treat each character as its own "syllable"
+            syllables.append(text[i])
+            i += 1
+    
+    return syllables
+
+
+def split_text_by_syllables(text: str, max_syllables: int = 10) -> List[str]:
+    """
+    Split text into chunks with max_syllables per chunk.
+    Preserves whole syllables.
     """
     text = re.sub(r"\s+", " ", text).strip()
     if not text:
         return [""]
-
+    
+    # Split by spaces first (word boundaries)
     words = text.split(" ")
+    
     chunks: List[str] = []
-    current = ""
-    current_len = 0
-
+    current_chunk = ""
+    current_syllable_count = 0
+    
     for word in words:
         word = word.strip()
         if not word:
             continue
         
-        word_len = len(word)
+        # Count syllables in this word
+        word_syllables = split_burmese_syllables(word)
+        word_syllable_count = len(word_syllables)
         
-        if not current:
-            current = word
-            current_len = word_len
-        elif current_len + 1 + word_len <= max_len:
-            current = current + " " + word
-            current_len = current_len + 1 + word_len
+        # If single word is too long, we have to split it
+        if word_syllable_count > max_syllables:
+            # First save current chunk if any
+            if current_chunk:
+                chunks.append(current_chunk)
+                current_chunk = ""
+                current_syllable_count = 0
+            
+            # Split long word into syllable chunks
+            i = 0
+            while i < len(word_syllables):
+                chunk_syllables = word_syllables[i:i + max_syllables]
+                chunks.append("".join(chunk_syllables))
+                i += max_syllables
+            continue
+        
+        # Check if adding this word would exceed max
+        if current_syllable_count + word_syllable_count <= max_syllables:
+            # Add to current chunk
+            if current_chunk:
+                current_chunk += " " + word
+            else:
+                current_chunk = word
+            current_syllable_count += word_syllable_count
         else:
-            # Start new chunk with this word
-            chunks.append(current)
-            current = word
-            current_len = word_len
-
-    if current:
-        chunks.append(current)
-
+            # Start new chunk
+            if current_chunk:
+                chunks.append(current_chunk)
+            current_chunk = word
+            current_syllable_count = word_syllable_count
+    
+    # Don't forget last chunk
+    if current_chunk:
+        chunks.append(current_chunk)
+    
     return chunks
 
 
-def split_cue(cue: Cue, max_len: int) -> List[Cue]:
+def split_cue_by_syllables(cue: Cue, max_syllables: int = 10) -> List[Cue]:
     """
-    Split a cue at word boundaries only.
+    Split a cue into multiple cues by syllable count.
     """
     text = cue.text.strip()
     if not text:
         return [Cue(cue.index, cue.start_ms, cue.end_ms, "")]
     
-    if len(text) <= max_len:
+    # Count total syllables
+    all_syllables = split_burmese_syllables(text)
+    total_syllables = len(all_syllables)
+    
+    if total_syllables <= max_syllables:
         return [Cue(cue.index, cue.start_ms, cue.end_ms, text)]
 
-    chunks = split_at_spaces_only(text, max_len)
+    chunks = split_text_by_syllables(text, max_syllables)
 
     if len(chunks) == 1:
         return [Cue(cue.index, cue.start_ms, cue.end_ms, chunks[0])]
 
-    # Distribute timing proportionally by character count
+    # Distribute timing proportionally by syllable count
     total_duration = max(1, cue.end_ms - cue.start_ms)
-    chunk_lengths = [len(c) for c in chunks]
-    total_len = sum(chunk_lengths)
+    chunk_syllable_counts = [len(split_burmese_syllables(c)) for c in chunks]
+    total_syllable_count = sum(chunk_syllable_counts)
     
     out: List[Cue] = []
     start = cue.start_ms
@@ -152,7 +224,8 @@ def split_cue(cue: Cue, max_len: int) -> List[Cue]:
         if i == len(chunks) - 1:
             end = cue.end_ms
         else:
-            duration = int((chunk_lengths[i] / total_len) * total_duration)
+            # Allocate time proportional to syllable count
+            duration = int((chunk_syllable_counts[i] / total_syllable_count) * total_duration)
             end = min(start + duration, cue.end_ms - 1)
             if end <= start:
                 end = start + 1
@@ -163,16 +236,17 @@ def split_cue(cue: Cue, max_len: int) -> List[Cue]:
     return out
 
 
-def rebuild_cues(cues: Iterable[Cue], max_len: int) -> List[Cue]:
+def rebuild_cues_by_syllables(cues: Iterable[Cue], max_syllables: int = 10) -> List[Cue]:
     """
-    Rebuild cues by splitting long captions at spaces only.
+    Rebuild cues by splitting at syllable boundaries.
     """
     merged: List[Cue] = []
     for cue in cues:
-        if len(cue.text) <= max_len:
+        cue_syllables = split_burmese_syllables(cue.text)
+        if len(cue_syllables) <= max_syllables:
             merged.append(Cue(0, cue.start_ms, cue.end_ms, cue.text))
         else:
-            merged.extend(split_cue(cue, max_len))
+            merged.extend(split_cue_by_syllables(cue, max_syllables))
 
     for i, cue in enumerate(merged, start=1):
         cue.index = i
@@ -211,7 +285,6 @@ def get_font_name_from_ttf(font_path: Path) -> Optional[str]:
     
     try:
         font = TTFont(str(font_path))
-        # Get the best family name
         family_name = font['name'].getBestFamilyName()
         font.close()
         return family_name
@@ -220,7 +293,7 @@ def get_font_name_from_ttf(font_path: Path) -> Optional[str]:
         return None
 
 
-def find_font_in_directory(fonts_dir: Path) -> tuple[Optional[Path], Optional[str]]:
+def find_font_in_directory(fonts_dir: Path) -> Tuple[Optional[Path], Optional[str]]:
     """
     Find the first TTF file in a directory and return its path and name.
     Returns (font_path, font_name) or (None, None) if no TTF found.
@@ -228,43 +301,20 @@ def find_font_in_directory(fonts_dir: Path) -> tuple[Optional[Path], Optional[st
     if not fonts_dir.exists():
         return None, None
     
-    # Look for TTF/OTF files recursively
-    font_files = (
-        list(fonts_dir.rglob("*.ttf"))
-        + list(fonts_dir.rglob("*.TTF"))
-        + list(fonts_dir.rglob("*.otf"))
-        + list(fonts_dir.rglob("*.OTF"))
-    )
-
-    if not font_files:
+    ttf_files = list(fonts_dir.rglob("*.ttf")) + list(fonts_dir.rglob("*.TTF"))
+    
+    if not ttf_files:
         return None, None
     
-    # Use the first font file found
-    font_path = font_files[0]
+    font_path = ttf_files[0]
     
-    # Try to get the actual font name from the file
     if HAS_FONTTOOLS:
         font_name = get_font_name_from_ttf(font_path)
         if font_name:
             return font_path.parent, font_name
     
-    # Fallback: use the filename without extension
     font_name = font_path.stem
     return font_path.parent, font_name
-
-
-def escape_filter_path(path: Path) -> str:
-    """
-    Escape paths for ffmpeg filter values.
-    """
-    return str(path).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
-
-
-def escape_style_value(value: str) -> str:
-    """
-    Escape ASS style values embedded in ffmpeg's force_style string.
-    """
-    return value.replace("\\", r"\\").replace("'", r"\'").replace(",", r"\,")
 
 
 def build_subtitles_filter(
@@ -273,7 +323,7 @@ def build_subtitles_filter(
     font_name: Optional[str],
     text_color: str,
     outline_color: str,
-    bg_color: str,
+    bg_color: Optional[str],
     outline: float,
     use_box: bool,
     font_size: int,
@@ -284,20 +334,26 @@ def build_subtitles_filter(
         f"Fontsize={font_size}",
         f"PrimaryColour={ass_color(text_color)}",
         f"OutlineColour={ass_color(outline_color)}",
-        f"BackColour={ass_color(bg_color, alpha='40')}",
         f"Outline={outline}",
         "Shadow=0",
         f"MarginV={margin_v}",
-        f"BorderStyle={3 if use_box else 1}",
     ]
+    
+    # Only add background if specified
+    if use_box and bg_color:
+        style.append(f"BackColour={ass_color(bg_color, alpha='40')}")
+        style.append("BorderStyle=3")
+    else:
+        style.append("BorderStyle=1")
+    
     if font_name:
-        style.append(f"FontName={escape_style_value(font_name)}")
+        style.append(f"FontName={font_name}")
 
-    srt_escaped = escape_filter_path(srt_path)
-    parts = [f"subtitles='{srt_escaped}'", "charenc=UTF-8", "wrap_unicode=1"]
+    srt_escaped = str(srt_path).replace("\\", "/").replace(":", "\\:")
+    parts = [f"subtitles='{srt_escaped}'"]
 
     if fonts_dir:
-        fonts_escaped = escape_filter_path(fonts_dir)
+        fonts_escaped = str(fonts_dir).replace("\\", "/").replace(":", "\\:")
         parts.append(f"fontsdir='{fonts_escaped}'")
 
     parts.append(f"force_style='{','.join(style)}'")
@@ -341,8 +397,8 @@ def main() -> int:
     parser.add_argument("--input-srt", required=True, type=Path)
     parser.add_argument("--output-video", required=True, type=Path)
 
-    parser.add_argument("--max-len", type=int, default=14, 
-                       help="Maximum characters per caption chunk (default 14).")
+    parser.add_argument("--max-syllables", type=int, default=10, 
+                       help="Maximum syllables per caption line (default 10).")
     parser.add_argument("--font-size", type=int, default=14,
                        help="Font size (default 14).")
 
@@ -353,7 +409,8 @@ def main() -> int:
 
     parser.add_argument("--text-color", choices=["red", "green", "yellow", "white", "black"], default="white")
     parser.add_argument("--outline-color", choices=["red", "green", "yellow", "white", "black"], default="black")
-    parser.add_argument("--bg-color", choices=["red", "green", "yellow", "white", "black"], default="black")
+    parser.add_argument("--bg-color", type=str, default=None,
+                       help="Background color (red, green, yellow, white, black). Omit for no background.")
     parser.add_argument("--outline", type=float, default=1.5)
     parser.add_argument("--use-box", action="store_true", help="Enable opaque background box behind captions.")
 
@@ -376,8 +433,8 @@ def main() -> int:
     if args.fonts_dir is not None:
         validate_path(args.fonts_dir, "Fonts directory")
 
-    if args.max_len <= 0:
-        raise ValueError("--max-len must be > 0")
+    if args.max_syllables <= 0:
+        raise ValueError("--max-syllables must be > 0")
 
     # Auto-detect font if directory provided but no font name
     fonts_dir = args.fonts_dir
@@ -395,7 +452,7 @@ def main() -> int:
 
     raw_srt = args.input_srt.read_text(encoding="utf-8-sig")
     cues = parse_srt(raw_srt)
-    processed = rebuild_cues(cues, max_len=args.max_len)
+    processed = rebuild_cues_by_syllables(cues, max_syllables=args.max_syllables)
 
     temp_file = None
     out_srt = args.save_processed_srt
