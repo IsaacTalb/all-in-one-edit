@@ -228,14 +228,19 @@ def find_font_in_directory(fonts_dir: Path) -> tuple[Optional[Path], Optional[st
     if not fonts_dir.exists():
         return None, None
     
-    # Look for TTF files recursively
-    ttf_files = list(fonts_dir.rglob("*.ttf")) + list(fonts_dir.rglob("*.TTF"))
-    
-    if not ttf_files:
+    # Look for TTF/OTF files recursively
+    font_files = (
+        list(fonts_dir.rglob("*.ttf"))
+        + list(fonts_dir.rglob("*.TTF"))
+        + list(fonts_dir.rglob("*.otf"))
+        + list(fonts_dir.rglob("*.OTF"))
+    )
+
+    if not font_files:
         return None, None
     
-    # Use the first TTF file found
-    font_path = ttf_files[0]
+    # Use the first font file found
+    font_path = font_files[0]
     
     # Try to get the actual font name from the file
     if HAS_FONTTOOLS:
@@ -246,6 +251,20 @@ def find_font_in_directory(fonts_dir: Path) -> tuple[Optional[Path], Optional[st
     # Fallback: use the filename without extension
     font_name = font_path.stem
     return font_path.parent, font_name
+
+
+def escape_filter_path(path: Path) -> str:
+    """
+    Escape paths for ffmpeg filter values.
+    """
+    return str(path).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
+
+
+def escape_style_value(value: str) -> str:
+    """
+    Escape ASS style values embedded in ffmpeg's force_style string.
+    """
+    return value.replace("\\", r"\\").replace("'", r"\'").replace(",", r"\,")
 
 
 def build_subtitles_filter(
@@ -272,13 +291,13 @@ def build_subtitles_filter(
         f"BorderStyle={3 if use_box else 1}",
     ]
     if font_name:
-        style.append(f"FontName={font_name}")
+        style.append(f"FontName={escape_style_value(font_name)}")
 
-    srt_escaped = str(srt_path).replace("\\", "/").replace(":", "\\:")
-    parts = [f"subtitles='{srt_escaped}'"]
+    srt_escaped = escape_filter_path(srt_path)
+    parts = [f"subtitles='{srt_escaped}'", "charenc=UTF-8", "wrap_unicode=1"]
 
     if fonts_dir:
-        fonts_escaped = str(fonts_dir).replace("\\", "/").replace(":", "\\:")
+        fonts_escaped = escape_filter_path(fonts_dir)
         parts.append(f"fontsdir='{fonts_escaped}'")
 
     parts.append(f"force_style='{','.join(style)}'")
