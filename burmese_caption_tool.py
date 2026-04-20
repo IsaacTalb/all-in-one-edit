@@ -35,7 +35,7 @@ except ImportError:
 
 SRT_PATTERN = re.compile(
     r"\s*(\d+)\s*\n"
-    r"(\d{2}:\d{2}:\d{2},\d{3})\s*--\u003e\s*(\d{2}:\d{2}:\d{2},\d{3})\s*\n"
+    r"(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})\s*\n"
     r"(.*?)(?=\n\s*\n|\Z)",
     re.DOTALL,
 )
@@ -49,7 +49,7 @@ class Cue:
     text: str
 
 
-def srt_time_to_ms(ts: str) -\u003e int:
+def srt_time_to_ms(ts: str) -> int:
     hh, mm, rest = ts.split(":")
     ss, ms = rest.split(",")
     return (
@@ -60,7 +60,7 @@ def srt_time_to_ms(ts: str) -\u003e int:
     )
 
 
-def ms_to_srt_time(ms: int) -\u003e str:
+def ms_to_srt_time(ms: int) -> str:
     ms = max(0, ms)
     hh = ms // 3_600_000
     ms %= 3_600_000
@@ -71,7 +71,7 @@ def ms_to_srt_time(ms: int) -\u003e str:
     return f"{hh:02d}:{mm:02d}:{ss:02d},{ms:03d}"
 
 
-def parse_srt(content: str) -\u003e List[Cue]:
+def parse_srt(content: str) -> List[Cue]:
     cues: List[Cue] = []
     for m in SRT_PATTERN.finditer(content):
         idx = int(m.group(1))
@@ -85,7 +85,7 @@ def parse_srt(content: str) -\u003e List[Cue]:
     return cues
 
 
-def split_at_spaces_only(text: str, max_len: int) -\u003e List[str]:
+def split_at_spaces_only(text: str, max_len: int) -> List[str]:
     """
     Split text at spaces only. Never breaks individual words.
     If a single word is longer than max_len, it stays as one caption.
@@ -109,7 +109,7 @@ def split_at_spaces_only(text: str, max_len: int) -\u003e List[str]:
         if not current:
             current = word
             current_len = word_len
-        elif current_len + 1 + word_len \u003c= max_len:
+        elif current_len + 1 + word_len <= max_len:
             current = current + " " + word
             current_len = current_len + 1 + word_len
         else:
@@ -124,7 +124,7 @@ def split_at_spaces_only(text: str, max_len: int) -\u003e List[str]:
     return chunks
 
 
-def split_cue(cue: Cue, max_len: int) -\u003e List[Cue]:
+def split_cue(cue: Cue, max_len: int) -> List[Cue]:
     """
     Split a cue at word boundaries only.
     """
@@ -132,7 +132,7 @@ def split_cue(cue: Cue, max_len: int) -\u003e List[Cue]:
     if not text:
         return [Cue(cue.index, cue.start_ms, cue.end_ms, "")]
     
-    if len(text) \u003c= max_len:
+    if len(text) <= max_len:
         return [Cue(cue.index, cue.start_ms, cue.end_ms, text)]
 
     chunks = split_at_spaces_only(text, max_len)
@@ -154,7 +154,7 @@ def split_cue(cue: Cue, max_len: int) -\u003e List[Cue]:
         else:
             duration = int((chunk_lengths[i] / total_len) * total_duration)
             end = min(start + duration, cue.end_ms - 1)
-            if end \u003c= start:
+            if end <= start:
                 end = start + 1
         
         out.append(Cue(0, start, end, chunk))
@@ -163,13 +163,13 @@ def split_cue(cue: Cue, max_len: int) -\u003e List[Cue]:
     return out
 
 
-def rebuild_cues(cues: Iterable[Cue], max_len: int) -\u003e List[Cue]:
+def rebuild_cues(cues: Iterable[Cue], max_len: int) -> List[Cue]:
     """
     Rebuild cues by splitting long captions at spaces only.
     """
     merged: List[Cue] = []
     for cue in cues:
-        if len(cue.text) \u003c= max_len:
+        if len(cue.text) <= max_len:
             merged.append(Cue(0, cue.start_ms, cue.end_ms, cue.text))
         else:
             merged.extend(split_cue(cue, max_len))
@@ -179,17 +179,17 @@ def rebuild_cues(cues: Iterable[Cue], max_len: int) -\u003e List[Cue]:
     return merged
 
 
-def write_srt(cues: Iterable[Cue], path: Path) -\u003e None:
+def write_srt(cues: Iterable[Cue], path: Path) -> None:
     lines: List[str] = []
     for cue in cues:
         lines.append(str(cue.index))
-        lines.append(f"{ms_to_srt_time(cue.start_ms)} --\u003e {ms_to_srt_time(cue.end_ms)}")
+        lines.append(f"{ms_to_srt_time(cue.start_ms)} --> {ms_to_srt_time(cue.end_ms)}")
         lines.append(cue.text)
         lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def ass_color(color: str, alpha: str = "00") -\u003e str:
+def ass_color(color: str, alpha: str = "00") -> str:
     m = {
         "white": "FFFFFF",
         "black": "000000",
@@ -199,10 +199,10 @@ def ass_color(color: str, alpha: str = "00") -\u003e str:
     }
     rgb = m[color.lower()]
     rr, gg, bb = rgb[0:2], rgb[2:4], rgb[4:6]
-    return f"\u0026H{alpha}{bb}{gg}{rr}"
+    return f"&H{alpha}{bb}{gg}{rr}"
 
 
-def get_font_name_from_ttf(font_path: Path) -\u003e Optional[str]:
+def get_font_name_from_ttf(font_path: Path) -> Optional[str]:
     """
     Extract the font family name from a TTF file using fontTools.
     """
@@ -220,7 +220,7 @@ def get_font_name_from_ttf(font_path: Path) -\u003e Optional[str]:
         return None
 
 
-def find_font_in_directory(fonts_dir: Path) -\u003e tuple[Optional[Path], Optional[str]]:
+def find_font_in_directory(fonts_dir: Path) -> tuple[Optional[Path], Optional[str]]:
     """
     Find the first TTF file in a directory and return its path and name.
     Returns (font_path, font_name) or (None, None) if no TTF found.
@@ -250,8 +250,8 @@ def find_font_in_directory(fonts_dir: Path) -\u003e tuple[Optional[Path], Option
 
 def build_subtitles_filter(
     srt_path: Path,
-    fonts_dir: Path | None,
-    font_name: str | None,
+    fonts_dir: Optional[Path],
+    font_name: Optional[str],
     text_color: str,
     outline_color: str,
     bg_color: str,
@@ -259,7 +259,7 @@ def build_subtitles_filter(
     use_box: bool,
     font_size: int,
     margin_v: int,
-) -\u003e str:
+) -> str:
     style = [
         "Alignment=10",  # middle center for 9:16 videos
         f"Fontsize={font_size}",
@@ -285,7 +285,7 @@ def build_subtitles_filter(
     return ":".join(parts)
 
 
-def run_ffmpeg(input_video: Path, output_video: Path, subtitles_filter: str, crf: int, preset: str) -\u003e None:
+def run_ffmpeg(input_video: Path, output_video: Path, subtitles_filter: str, crf: int, preset: str) -> None:
     cmd = [
         "ffmpeg",
         "-y",
@@ -311,12 +311,12 @@ def run_ffmpeg(input_video: Path, output_video: Path, subtitles_filter: str, crf
         raise RuntimeError("ffmpeg failed. Make sure ffmpeg is installed and available in PATH.")
 
 
-def validate_path(path: Path, label: str) -\u003e None:
+def validate_path(path: Path, label: str) -> None:
     if not path.exists():
         raise FileNotFoundError(f"{label} not found: {path}")
 
 
-def main() -\u003e int:
+def main() -> int:
     parser = argparse.ArgumentParser(description="Shorten Burmese SRT and burn into video with ffmpeg.")
     parser.add_argument("--input-video", required=True, type=Path)
     parser.add_argument("--input-srt", required=True, type=Path)
@@ -357,8 +357,8 @@ def main() -\u003e int:
     if args.fonts_dir is not None:
         validate_path(args.fonts_dir, "Fonts directory")
 
-    if args.max_len \u003c= 0:
-        raise ValueError("--max-len must be \u003e 0")
+    if args.max_len <= 0:
+        raise ValueError("--max-len must be > 0")
 
     # Auto-detect font if directory provided but no font name
     fonts_dir = args.fonts_dir
