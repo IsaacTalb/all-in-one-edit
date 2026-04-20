@@ -4,11 +4,12 @@ Burmese short-video caption tool.
 
 Features:
 - Reads SRT.
-- Shortens long captions to a max character limit.
-- Reflows long captions into multiple subtitle cues.
+- Shortens long captions by splitting at word boundaries (spaces only).
+- Never breaks individual words - keeps them intact.
 - Auto-adjusts cue timing when a caption is split.
 - Burns subtitles into video with ffmpeg.
 - Supports custom fonts dir, center/middle placement, text color, outline, and background box.
+- Auto-detects font name from TTF files.
 """
 
 from __future__ import annotations
@@ -22,12 +23,19 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Optional
+
+
+try:
+    from fontTools.ttLib import TTFont
+    HAS_FONTTOOLS = True
+except ImportError:
+    HAS_FONTTOOLS = False
 
 
 SRT_PATTERN = re.compile(
     r"\s*(\d+)\s*\n"
-    r"(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})\s*\n"
+    r"(\d{2}:\d{2}:\d{2},\d{3})\s*--\u003e\s*(\d{2}:\d{2}:\d{2},\d{3})\s*\n"
     r"(.*?)(?=\n\s*\n|\Z)",
     re.DOTALL,
 )
@@ -41,7 +49,7 @@ class Cue:
     text: str
 
 
-def srt_time_to_ms(ts: str) -> int:
+def srt_time_to_ms(ts: str) -\u003e int:
     hh, mm, rest = ts.split(":")
     ss, ms = rest.split(",")
     return (
@@ -52,7 +60,7 @@ def srt_time_to_ms(ts: str) -> int:
     )
 
 
-def ms_to_srt_time(ms: int) -> str:
+def ms_to_srt_time(ms: int) -\u003e str:
     ms = max(0, ms)
     hh = ms // 3_600_000
     ms %= 3_600_000
@@ -63,7 +71,7 @@ def ms_to_srt_time(ms: int) -> str:
     return f"{hh:02d}:{mm:02d}:{ss:02d},{ms:03d}"
 
 
-def parse_srt(content: str) -> List[Cue]:
+def parse_srt(content: str) -\u003e List[Cue]:
     cues: List[Cue] = []
     for m in SRT_PATTERN.finditer(content):
         idx = int(m.group(1))
@@ -77,7 +85,11 @@ def parse_srt(content: str) -> List[Cue]:
     return cues
 
 
-def split_text_to_chunks(text: str, max_chars: int) -> List[str]:
+def split_at_spaces_only(text: str, max_len: int) -\u003e List[str]:
+    """
+    Split text at spaces only. Never breaks individual words.
+    If a single word is longer than max_len, it stays as one caption.
+    """
     text = re.sub(r"\s+", " ", text).strip()
     if not text:
         return [""]
@@ -85,34 +97,26 @@ def split_text_to_chunks(text: str, max_chars: int) -> List[str]:
     words = text.split(" ")
     chunks: List[str] = []
     current = ""
+    current_len = 0
 
     for word in words:
+        word = word.strip()
+        if not word:
+            continue
+        
+        word_len = len(word)
+        
         if not current:
-            if len(word) <= max_chars:
-                current = word
-            else:
-                # fallback for very long token (no spaces)
-                for i in range(0, len(word), max_chars):
-                    part = word[i : i + max_chars]
-                    if len(part) == max_chars:
-                        chunks.append(part)
-                    else:
-                        current = part
+            current = word
+            current_len = word_len
+        elif current_len + 1 + word_len \u003c= max_len:
+            current = current + " " + word
+            current_len = current_len + 1 + word_len
         else:
-            candidate = f"{current} {word}"
-            if len(candidate) <= max_chars:
-                current = candidate
-            else:
-                chunks.append(current)
-                if len(word) <= max_chars:
-                    current = word
-                else:
-                    for i in range(0, len(word), max_chars):
-                        part = word[i : i + max_chars]
-                        if len(part) == max_chars:
-                            chunks.append(part)
-                        else:
-                            current = part
+            # Start new chunk with this word
+            chunks.append(current)
+            current = word
+            current_len = word_len
 
     if current:
         chunks.append(current)
@@ -120,70 +124,72 @@ def split_text_to_chunks(text: str, max_chars: int) -> List[str]:
     return chunks
 
 
-def rebalance_min_chars(chunks: List[str], min_chars: int, max_chars: int) -> List[str]:
-    if min_chars <= 0 or len(chunks) < 2:
-        return chunks
+def split_cue(cue: Cue, max_len: int) -\u003e List[Cue]:
+    """
+    Split a cue at word boundaries only.
+    """
+    text = cue.text.strip()
+    if not text:
+        return [Cue(cue.index, cue.start_ms, cue.end_ms, "")]
+    
+    if len(text) \u003c= max_len:
+        return [Cue(cue.index, cue.start_ms, cue.end_ms, text)]
 
-    out = chunks[:]
-    i = len(out) - 1
-    while i > 0:
-        if len(out[i]) < min_chars:
-            combined = f"{out[i-1]} {out[i]}".strip()
-            if len(combined) <= max_chars:
-                out[i - 1] = combined
-                del out[i]
-        i -= 1
-
-    return out
-
-
-def split_cue(cue: Cue, max_chars: int, min_chars: int) -> List[Cue]:
-    chunks = split_text_to_chunks(cue.text, max_chars)
-    chunks = rebalance_min_chars(chunks, min_chars=min_chars, max_chars=max_chars)
+    chunks = split_at_spaces_only(text, max_len)
 
     if len(chunks) == 1:
         return [Cue(cue.index, cue.start_ms, cue.end_ms, chunks[0])]
 
-    total = max(1, cue.end_ms - cue.start_ms)
-    lengths = [max(1, len(c)) for c in chunks]
-    unit = total / sum(lengths)
-
+    # Distribute timing proportionally by character count
+    total_duration = max(1, cue.end_ms - cue.start_ms)
+    chunk_lengths = [len(c) for c in chunks]
+    total_len = sum(chunk_lengths)
+    
     out: List[Cue] = []
     start = cue.start_ms
-    for idx, (chunk, l) in enumerate(zip(chunks, lengths), start=1):
-        if idx == len(chunks):
+    
+    for i, chunk in enumerate(chunks):
+        if i == len(chunks) - 1:
             end = cue.end_ms
         else:
-            end = int(round(start + l * unit))
-            if end <= start:
+            duration = int((chunk_lengths[i] / total_len) * total_duration)
+            end = min(start + duration, cue.end_ms - 1)
+            if end \u003c= start:
                 end = start + 1
+        
         out.append(Cue(0, start, end, chunk))
         start = end
 
     return out
 
 
-def rebuild_cues(cues: Iterable[Cue], max_chars: int, min_chars: int) -> List[Cue]:
+def rebuild_cues(cues: Iterable[Cue], max_len: int) -\u003e List[Cue]:
+    """
+    Rebuild cues by splitting long captions at spaces only.
+    """
     merged: List[Cue] = []
     for cue in cues:
-        merged.extend(split_cue(cue, max_chars=max_chars, min_chars=min_chars))
+        if len(cue.text) \u003c= max_len:
+            merged.append(Cue(0, cue.start_ms, cue.end_ms, cue.text))
+        else:
+            merged.extend(split_cue(cue, max_len))
 
     for i, cue in enumerate(merged, start=1):
         cue.index = i
     return merged
 
 
-def write_srt(cues: Iterable[Cue], path: Path) -> None:
+def write_srt(cues: Iterable[Cue], path: Path) -\u003e None:
     lines: List[str] = []
     for cue in cues:
         lines.append(str(cue.index))
-        lines.append(f"{ms_to_srt_time(cue.start_ms)} --> {ms_to_srt_time(cue.end_ms)}")
+        lines.append(f"{ms_to_srt_time(cue.start_ms)} --\u003e {ms_to_srt_time(cue.end_ms)}")
         lines.append(cue.text)
         lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def ass_color(color: str, alpha: str = "00") -> str:
+def ass_color(color: str, alpha: str = "00") -\u003e str:
     m = {
         "white": "FFFFFF",
         "black": "000000",
@@ -193,7 +199,53 @@ def ass_color(color: str, alpha: str = "00") -> str:
     }
     rgb = m[color.lower()]
     rr, gg, bb = rgb[0:2], rgb[2:4], rgb[4:6]
-    return f"&H{alpha}{bb}{gg}{rr}"
+    return f"\u0026H{alpha}{bb}{gg}{rr}"
+
+
+def get_font_name_from_ttf(font_path: Path) -\u003e Optional[str]:
+    """
+    Extract the font family name from a TTF file using fontTools.
+    """
+    if not HAS_FONTTOOLS:
+        return None
+    
+    try:
+        font = TTFont(str(font_path))
+        # Get the best family name
+        family_name = font['name'].getBestFamilyName()
+        font.close()
+        return family_name
+    except Exception as e:
+        print(f"Warning: Could not read font name from {font_path}: {e}")
+        return None
+
+
+def find_font_in_directory(fonts_dir: Path) -\u003e tuple[Optional[Path], Optional[str]]:
+    """
+    Find the first TTF file in a directory and return its path and name.
+    Returns (font_path, font_name) or (None, None) if no TTF found.
+    """
+    if not fonts_dir.exists():
+        return None, None
+    
+    # Look for TTF files recursively
+    ttf_files = list(fonts_dir.rglob("*.ttf")) + list(fonts_dir.rglob("*.TTF"))
+    
+    if not ttf_files:
+        return None, None
+    
+    # Use the first TTF file found
+    font_path = ttf_files[0]
+    
+    # Try to get the actual font name from the file
+    if HAS_FONTTOOLS:
+        font_name = get_font_name_from_ttf(font_path)
+        if font_name:
+            return font_path.parent, font_name
+    
+    # Fallback: use the filename without extension
+    font_name = font_path.stem
+    return font_path.parent, font_name
 
 
 def build_subtitles_filter(
@@ -207,9 +259,9 @@ def build_subtitles_filter(
     use_box: bool,
     font_size: int,
     margin_v: int,
-) -> str:
+) -\u003e str:
     style = [
-        "Alignment=5",  # middle center
+        "Alignment=10",  # middle center for 9:16 videos
         f"Fontsize={font_size}",
         f"PrimaryColour={ass_color(text_color)}",
         f"OutlineColour={ass_color(outline_color)}",
@@ -233,7 +285,7 @@ def build_subtitles_filter(
     return ":".join(parts)
 
 
-def run_ffmpeg(input_video: Path, output_video: Path, subtitles_filter: str, crf: int, preset: str) -> None:
+def run_ffmpeg(input_video: Path, output_video: Path, subtitles_filter: str, crf: int, preset: str) -\u003e None:
     cmd = [
         "ffmpeg",
         "-y",
@@ -259,31 +311,34 @@ def run_ffmpeg(input_video: Path, output_video: Path, subtitles_filter: str, crf
         raise RuntimeError("ffmpeg failed. Make sure ffmpeg is installed and available in PATH.")
 
 
-def validate_path(path: Path, label: str) -> None:
+def validate_path(path: Path, label: str) -\u003e None:
     if not path.exists():
         raise FileNotFoundError(f"{label} not found: {path}")
 
 
-def main() -> int:
+def main() -\u003e int:
     parser = argparse.ArgumentParser(description="Shorten Burmese SRT and burn into video with ffmpeg.")
     parser.add_argument("--input-video", required=True, type=Path)
     parser.add_argument("--input-srt", required=True, type=Path)
     parser.add_argument("--output-video", required=True, type=Path)
 
-    parser.add_argument("--max-chars", type=int, default=18, help="Maximum characters per caption chunk.")
-    parser.add_argument("--min-chars", type=int, default=0, help="Optional minimum characters when rebalancing chunks.")
+    parser.add_argument("--max-len", type=int, default=14, 
+                       help="Maximum characters per caption chunk (default 14).")
+    parser.add_argument("--font-size", type=int, default=14,
+                       help="Font size (default 14).")
 
-    parser.add_argument("--fonts-dir", type=Path, default=None, help="Folder containing custom font files.")
-    parser.add_argument("--font-name", type=str, default=None, help="Exact font family name for ASS style.")
+    parser.add_argument("--fonts-dir", type=Path, default=None, 
+                       help="Folder containing custom font files. Will auto-detect font name if not specified.")
+    parser.add_argument("--font-name", type=str, default=None, 
+                       help="Exact font family name for ASS style. Auto-detected from TTF if not provided.")
 
     parser.add_argument("--text-color", choices=["red", "green", "yellow", "white", "black"], default="white")
     parser.add_argument("--outline-color", choices=["red", "green", "yellow", "white", "black"], default="black")
     parser.add_argument("--bg-color", choices=["red", "green", "yellow", "white", "black"], default="black")
-    parser.add_argument("--outline", type=float, default=2.0)
+    parser.add_argument("--outline", type=float, default=1.5)
     parser.add_argument("--use-box", action="store_true", help="Enable opaque background box behind captions.")
 
-    parser.add_argument("--font-size", type=int, default=18)
-    parser.add_argument("--margin-v", type=int, default=20, help="Vertical margin from center anchoring.")
+    parser.add_argument("--margin-v", type=int, default=50, help="Vertical margin from center.")
 
     parser.add_argument("--preset", default="medium", help="ffmpeg x264 preset.")
     parser.add_argument("--crf", type=int, default=20, help="ffmpeg CRF quality (lower is higher quality).")
@@ -292,7 +347,7 @@ def main() -> int:
         "--save-processed-srt",
         type=Path,
         default=None,
-        help="Optional output path for processed/shortened SRT. Defaults to temp file.",
+        help="Optional output path for processed/shortened SRT.",
     )
 
     args = parser.parse_args()
@@ -302,14 +357,26 @@ def main() -> int:
     if args.fonts_dir is not None:
         validate_path(args.fonts_dir, "Fonts directory")
 
-    if args.max_chars <= 0:
-        raise ValueError("--max-chars must be > 0")
-    if args.min_chars < 0:
-        raise ValueError("--min-chars must be >= 0")
+    if args.max_len \u003c= 0:
+        raise ValueError("--max-len must be \u003e 0")
+
+    # Auto-detect font if directory provided but no font name
+    fonts_dir = args.fonts_dir
+    font_name = args.font_name
+    
+    if fonts_dir and not font_name:
+        detected_dir, detected_name = find_font_in_directory(fonts_dir)
+        if detected_name:
+            fonts_dir = detected_dir
+            font_name = detected_name
+            print(f"Auto-detected font: {font_name}")
+            print(f"Font directory: {fonts_dir}")
+        else:
+            print(f"Warning: Could not auto-detect font name from {fonts_dir}")
 
     raw_srt = args.input_srt.read_text(encoding="utf-8-sig")
     cues = parse_srt(raw_srt)
-    processed = rebuild_cues(cues, max_chars=args.max_chars, min_chars=args.min_chars)
+    processed = rebuild_cues(cues, max_len=args.max_len)
 
     temp_file = None
     out_srt = args.save_processed_srt
@@ -320,11 +387,12 @@ def main() -> int:
         out_srt = temp_file
 
     write_srt(processed, out_srt)
+    print(f"Processed {len(cues)} original cues into {len(processed)} output cues")
 
     subtitles_filter = build_subtitles_filter(
         srt_path=out_srt,
-        fonts_dir=args.fonts_dir,
-        font_name=args.font_name,
+        fonts_dir=fonts_dir,
+        font_name=font_name,
         text_color=args.text_color,
         outline_color=args.outline_color,
         bg_color=args.bg_color,
