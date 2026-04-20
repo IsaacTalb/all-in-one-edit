@@ -238,19 +238,25 @@ def split_cue_by_syllables(cue: Cue, max_syllables: int = 10) -> List[Cue]:
 
 def rebuild_cues_by_syllables(cues: Iterable[Cue], max_syllables: int = 10) -> List[Cue]:
     """
-    Rebuild cues by splitting at syllable boundaries.
+    Rebuild cues - SRT splitting disabled, using original SRT from Gemini CLI.
+    Pass through original cues without modification.
     """
-    merged: List[Cue] = []
-    for cue in cues:
-        cue_syllables = split_burmese_syllables(cue.text)
-        if len(cue_syllables) <= max_syllables:
-            merged.append(Cue(0, cue.start_ms, cue.end_ms, cue.text))
-        else:
-            merged.extend(split_cue_by_syllables(cue, max_syllables))
-
-    for i, cue in enumerate(merged, start=1):
-        cue.index = i
-    return merged
+    # NOTE: SRT splitting disabled. Using pre-split SRT from Gemini CLI.
+    # To re-enable splitting, uncomment below:
+    # merged: List[Cue] = []
+    # for cue in cues:
+    #     cue_syllables = split_burmese_syllables(cue.text)
+    #     if len(cue_syllables) <= max_syllables:
+    #         merged.append(Cue(0, cue.start_ms, cue.end_ms, cue.text))
+    #     else:
+    #         merged.extend(split_cue_by_syllables(cue, max_syllables))
+    # 
+    # for i, cue in enumerate(merged, start=1):
+    #     cue.index = i
+    # return merged
+    
+    # Pass through original cues
+    return list(cues)
 
 
 def write_srt(cues: Iterable[Cue], path: Path) -> None:
