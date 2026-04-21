@@ -44,9 +44,12 @@ SRT_PATTERN = re.compile(
 # Myanmar Unicode ranges
 MYANMAR_CONSONANTS = r'\u1000-\u1021'
 MYANMAR_INDEPENDENT = r'\u1023-\u1027\u1029-\u102A'
+MYANMAR_LETTERS = r"\u1000-\u109F\uA9E0-\uA9FF\uAA60-\uAA7F"
 MYANMAR_MEDIALS = r'\u103B-\u103E'
 MYANMAR_VOWELS = r'\u102C-\u1032\u1036-\u1038'
 MYANMAR_KILLERS = r'\u103A\u1039'
+MYANMAR_MARKS = r"\u102B-\u103E\u1056-\u1060\u1062-\u1064\u1067-\u106D\u1071-\u1074\u1082\u1085\u1086\u108D\uA9E5\uAA7B"
+ZERO_WIDTH_CHARS = "\u200b\u200c\u200d\ufeff"
 
 
 @dataclass
@@ -55,6 +58,29 @@ class Cue:
     start_ms: int
     end_ms: int
     text: str
+
+
+def normalize_burmese_text(text: str) -> str:
+    """
+    Normalize Burmese subtitle text so combining marks stay attached to their base.
+    Fixes common issues like:
+    - inserted spaces before combining marks (e.g. "က ြ")
+    - zero-width control characters inside syllables (e.g. "န‌ေ")
+    """
+    if not text:
+        return ""
+
+    text = unicodedata.normalize("NFC", text)
+    text = re.sub(f"[{ZERO_WIDTH_CHARS}]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # Remove accidental spaces before Myanmar combining marks.
+    text = re.sub(rf"\s+([{MYANMAR_MARKS}])", r"\1", text)
+    # Remove accidental spaces after an asat/virama when text was wrapped badly.
+    text = re.sub(r"([\u103A\u1039])\s+", r"\1", text)
+    # Remove accidental spaces between two Myanmar letters (line-wrap artifact).
+    text = re.sub(rf"([{MYANMAR_LETTERS}])\s+([{MYANMAR_LETTERS}])", r"\1\2", text)
+    return text
 
 
 def srt_time_to_ms(ts: str) -> int:
@@ -85,7 +111,7 @@ def parse_srt(content: str) -> List[Cue]:
         idx = int(m.group(1))
         start = srt_time_to_ms(m.group(2))
         end = srt_time_to_ms(m.group(3))
-        text = m.group(4).strip().replace("\n", " ")
+        text = normalize_burmese_text(m.group(4).strip().replace("\n", " "))
         cues.append(Cue(idx, start, end, text))
 
     if not cues:
@@ -98,7 +124,7 @@ def split_burmese_syllables(text: str) -> List[str]:
     Split Burmese text into syllables.
     A syllable consists of: consonant + optional medials + optional vowels + optional killers
     """
-    text = re.sub(r"\s+", " ", text).strip()
+    text = normalize_burmese_text(text)
     if not text:
         return []
     
@@ -134,7 +160,7 @@ def split_text_by_syllables(text: str, max_syllables: int = 10) -> List[str]:
     Split text into chunks with max_syllables per chunk.
     Preserves whole syllables.
     """
-    text = re.sub(r"\s+", " ", text).strip()
+    text = normalize_burmese_text(text)
     if not text:
         return [""]
     
