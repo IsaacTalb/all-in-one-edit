@@ -183,6 +183,24 @@ def ass_color(color: str, alpha: str = "00") -> str:
     return f"&H{alpha}{bb}{gg}{rr}"
 
 
+def ffmpeg_build_features() -> tuple[bool, bool, bool]:
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-version"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False, False, False
+
+    text = f"{proc.stdout}\n{proc.stderr}".lower()
+    has_libass = "--enable-libass" in text or "libass" in text
+    has_harfbuzz = "--enable-libharfbuzz" in text or "harfbuzz" in text
+    has_fribidi = "--enable-libfribidi" in text or "fribidi" in text
+    return has_libass, has_harfbuzz, has_fribidi
+
+
 class CaptionToolGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -484,6 +502,16 @@ class CaptionToolGUI:
         video_path = Path(self.video_path.get())
         srt_path = Path(self.srt_path.get())
         output_path = Path(self.output_path.get())
+
+        has_libass, has_harfbuzz, has_fribidi = ffmpeg_build_features()
+        if has_libass and has_harfbuzz and has_fribidi:
+            self.root.after(0, lambda: self.log("FFmpeg shaping check: libass + harfbuzz + fribidi detected ✅"))
+        else:
+            self.root.after(0, lambda: self.log("Warning: FFmpeg build may not fully support Myanmar shaping"))
+            self.root.after(0, lambda: self.log(f"  libass: {'yes' if has_libass else 'no'}"))
+            self.root.after(0, lambda: self.log(f"  harfbuzz: {'yes' if has_harfbuzz else 'no'}"))
+            self.root.after(0, lambda: self.log(f"  fribidi: {'yes' if has_fribidi else 'no'}"))
+            self.root.after(0, lambda: self.log("Broken output like 'န‌ေ' or 'က ြ' usually means missing shaping libs"))
         fonts_dir = Path(self.fonts_dir.get()) if self.fonts_dir.get() else None
         
         # Validate files exist

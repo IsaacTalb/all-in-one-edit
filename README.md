@@ -44,6 +44,28 @@ python burmese_caption_tool.py \
 - If one caption has more than 10 syllables, the tool splits it into multiple subtitle entries and redistributes the original cue duration.
 - Omit `--use-box` for no background color (text will have outline only).
 - Font name is **auto-detected** from TTF metadata if not specified.
+- This tool uses FFmpeg's `subtitles` filter (ASS/libass), **not** `drawtext`, because Myanmar text requires complex shaping.
+
+## Myanmar text shaping (important)
+If Myanmar output looks broken (examples: `န‌ေ ကာင်း လား`, `က ြည့် စမ်း`), the issue is usually FFmpeg build support, not your SRT text.
+
+For correct rendering, FFmpeg should include:
+- `libass`
+- `harfbuzz`
+- `fribidi`
+
+This project now checks FFmpeg at runtime and prints a warning if these are missing.
+
+### Why this happens
+- Myanmar script requires glyph reordering/combining (complex shaping).
+- `drawtext` often fails for Myanmar.
+- Even with `subtitles`, shaping quality depends on how FFmpeg was compiled.
+
+### Recommended workflow
+1. Keep subtitles as Unicode (not Zawgyi).
+2. Burn with `subtitles=` filter (ASS/libass).
+3. Use a Myanmar Unicode font.
+4. If shaping is still broken, install an FFmpeg build with the 3 libraries above.
 
 ## Project Structure
 ```

@@ -382,7 +382,7 @@ def build_subtitles_filter(
         style.append(f"FontName={font_name}")
 
     srt_escaped = str(srt_path).replace("\\", "/").replace(":", "\\:")
-    parts = [f"subtitles='{srt_escaped}'"]
+    parts = [f"subtitles='{srt_escaped}'", "charenc=UTF-8", "wrap_unicode=1"]
 
     if fonts_dir:
         fonts_escaped = str(fonts_dir).replace("\\", "/").replace(":", "\\:")
@@ -390,6 +390,44 @@ def build_subtitles_filter(
 
     parts.append(f"force_style='{','.join(style)}'")
     return ":".join(parts)
+
+
+def ffmpeg_build_features() -> Tuple[bool, bool, bool]:
+    """
+    Return ffmpeg support flags for (libass, harfbuzz, fribidi).
+    """
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-version"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False, False, False
+
+    text = f"{proc.stdout}\n{proc.stderr}".lower()
+    has_libass = "--enable-libass" in text or "libass" in text
+    has_harfbuzz = "--enable-libharfbuzz" in text or "harfbuzz" in text
+    has_fribidi = "--enable-libfribidi" in text or "fribidi" in text
+    return has_libass, has_harfbuzz, has_fribidi
+
+
+def print_myanmar_rendering_diagnostics() -> None:
+    """
+    Warn when ffmpeg build likely cannot shape Myanmar Unicode correctly.
+    """
+    has_libass, has_harfbuzz, has_fribidi = ffmpeg_build_features()
+    if has_libass and has_harfbuzz and has_fribidi:
+        print("FFmpeg shaping check: libass + harfbuzz + fribidi detected ✅")
+        return
+
+    print("Warning: FFmpeg build may not fully support Myanmar shaping.")
+    print(f"  - libass: {'yes' if has_libass else 'no'}")
+    print(f"  - harfbuzz: {'yes' if has_harfbuzz else 'no'}")
+    print(f"  - fribidi: {'yes' if has_fribidi else 'no'}")
+    print("If you see broken text like 'န‌ေ' or 'က ြ', install ffmpeg with all three libraries.")
+    print("This tool uses ASS subtitles (not drawtext), but shaping still depends on ffmpeg build.")
 
 
 def run_ffmpeg(input_video: Path, output_video: Path, subtitles_filter: str, crf: int, preset: str) -> None:
@@ -459,6 +497,8 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+
+    print_myanmar_rendering_diagnostics()
 
     validate_path(args.input_video, "Input video")
     validate_path(args.input_srt, "Input SRT")
