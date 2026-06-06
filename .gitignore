@@ -11,3 +11,13 @@ exported_list*
 __pycache__/
 *.pyc
 .DS_Store
+
+# Environment files
+.env
+venv/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+# Other files to ignore
+*.bak
+*.swp
